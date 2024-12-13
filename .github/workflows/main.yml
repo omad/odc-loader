@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "*.*.*" # Trigger on version tags without 'v' prefix
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
@@ -14,7 +16,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Let setuptools-scm work
+          fetch-depth: 0 # Let setuptools-scm work
 
       - uses: actions/cache@v4
         with:
@@ -47,3 +49,121 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+  build:
+    needs: [quality, run-tests]
+    name: Build distribution 📦
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install pypa/build
+        run: >-
+          python3 -m
+          pip install
+          build
+          --user
+      - name: Build a binary wheel and a source tarball
+        run: python3 -m build
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+  release:
+    needs: [build]
+
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/odc-loader
+    permissions:
+      contents: write # Needed for tag/commit operations
+      id-token: write # Needed for OIDC authentication with PyPI
+
+    steps:
+      - name: Get version info
+        id: version
+        run: |
+          # Get tag version (no prefix to remove)
+          echo "tag_version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+          # Get version from Python file using sed
+          PYFILE_VERSION=$(sed -n "s/__version__ = ['\"]\([^'\"]*\)['\"].*/\1/p" src/odc/loader/__init__.py)
+          echo "pyfile_version=$PYFILE_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Version comparison
+        id: version_check
+        run: |
+          TAG_VER=${{ steps.version.outputs.tag_version }}
+          PY_VER=${{ steps.version.outputs.pyfile_version }}
+
+          if [ "$TAG_VER" = "$PY_VER" ]; then
+            echo "status=ok" >> $GITHUB_OUTPUT
+          elif python -c "from packaging import version; exit(0 if version.parse('$TAG_VER') > version.parse('$PY_VER') else 1)"; then
+            echo "status=update_needed" >> $GITHUB_OUTPUT
+          else
+            echo "status=error" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exit if version mismatch (higher in Python)
+        if: steps.version_check.outputs.status == 'error'
+        run: |
+          echo "Error: Version in Python file (${{ steps.version.outputs.pyfile_version }}) is higher than tag version (${{ steps.version.outputs.tag_version }})"
+          exit 1
+
+      - name: Update version in file if needed
+        if: steps.version_check.outputs.status == 'update_needed'
+        run: |
+          # Update version in file
+          sed -i "s/__version__ = ['\"].*['\"]/__version__ = '${{ steps.version.outputs.tag_version }}'/" src/odc/loader/__init__.py
+
+          # Configure git
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Commit and push changes
+          git add src/odc/loader/__init__.py
+          git commit -m "Update version to ${{ steps.version.outputs.tag_version }}"
+          git push
+
+          # Update tag to point to new commit
+          git tag -fa ${{ steps.version.outputs.tag_version }} -m "Update version to ${{ steps.version.outputs.tag_version }}"
+          git push --force origin ${{ steps.version.outputs.tag_version }}
+
+          echo "Version updated and tag moved. Please re-run the workflow."
+          exit 0
+
+      - name: Build package
+        if: steps.version_check.outputs.status == 'ok'
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Get Release
+        if: steps.version_check.outputs.status == 'ok'
+        id: get_release
+        uses: bruceadams/get-release@v1.3.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload Release Assets
+        if: steps.version_check.outputs.status == 'ok'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./dist/*
+          asset_name: ${{ github.event.repository.name }}-${{ steps.version.outputs.tag_version }}.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Publish to PyPI
+        if: steps.version_check.outputs.status == 'ok'
+        uses: pypa/gh-action-pypi-publish@v1.8.11
