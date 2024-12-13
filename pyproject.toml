@@ -1,5 +1,4 @@
 [project]
-version = "0.4.0"
 name = "odc-loader"
 description = "Tooling for constructing xarray objects from parsed metadata"
 readme = "README.md"
@@ -23,6 +22,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: GIS",
     "Typing :: Typed",
 ]
+dynamic = ["version"]
 
 [project.urls]
 Homepage = "https://github.com/opendatacube/odc-loader/"
