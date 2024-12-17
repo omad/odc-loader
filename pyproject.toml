@@ -42,22 +42,26 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "src/odc/loader/__init__.py"
 
+# We need to specify this because the project name "odc-loader"
+# Doesn't match the Package we're distributing "odc.loader"
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/**"
+]
 
-[tool.flit.module]
-name = "odc.loader"
+[tool.hatch.build.targets.wheel]
+packages = ["src/odc"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 ignore_missing_imports = true
 allow_redefinition = true
 show_error_codes = true
-
 
 [tool.isort]
 profile = "black"
 
 [tool.pylint.messages_control]
-
 max-line-length = 120
 max-args = 10
 
