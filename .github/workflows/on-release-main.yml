@@ -45,6 +45,12 @@ jobs:
           # package, and use the uv installer because it's blazing fast
           uv build
           uvx twine check --strict dist/*
+          echo "Listing built artefacts"
+          ls dist/*
+          echo "Listing sdist contents"
+          tar -tzf dist/*.tar.gz
+          echo "Listing wheel contents"
+          unzip -l dist/*.whl
 
       # - name: Publish package distributions to PyPI
         # uses: pypa/gh-action-pypi-publish@release/v1
