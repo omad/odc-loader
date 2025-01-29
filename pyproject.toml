@@ -36,11 +36,12 @@ zarr = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/odc/loader/__init__.py"
+source = "vcs"
+# path = "src/odc/loader/__init__.py"
 
 # We need to specify this because the project name "odc-loader"
 # Doesn't match the Package we're distributing "odc.loader"
