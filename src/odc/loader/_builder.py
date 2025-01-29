@@ -1,8 +1,20 @@
-"""stac.load - dc.load from STAC Items."""
+"""
+Dask based parallel loading from heterogeneous raster sources
+
+Like dc.load(), but the sources could be ODC Datasets, or STAC Items, or some other
+representation of a raster source.
+
+The main entrypoint is the `chunked_load()` function.
+
+
+
+
+"""
 
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -53,6 +65,8 @@ from .types import (
 )
 
 DaskBuilderMode = Literal["mem", "concurrency"]
+
+logger = logging.getLogger(__name__)
 
 
 class MkArray(Protocol):
@@ -523,7 +537,7 @@ def _fill_nd_slice(
 
 def mk_dataset(
     gbox: GeoBox,
-    time: Sequence[datetime],
+    times: Sequence[datetime],
     bands: Mapping[str, RasterLoadParams],
     alloc: Optional[MkArray] = None,
     *,
@@ -531,7 +545,7 @@ def mk_dataset(
 ) -> xr.Dataset:
     coords = xr_coords(gbox)
     crs_coord_name: Hashable = list(coords)[-1]
-    coords["time"] = xr.DataArray(time, dims=("time",))
+    coords["time"] = xr.DataArray(times, dims=("time",))
     _dims = template.extra_dims_full()
 
     _coords = {
@@ -565,7 +579,7 @@ def mk_dataset(
                 *postfix_dims,
             )
             shape: Tuple[int, ...] = (
-                len(time),
+                len(times),
                 *[_dims[dim] for dim in prefix_dims],
                 *gbox.shape.yx,
                 *[_dims[dim] for dim in postfix_dims],
@@ -580,7 +594,7 @@ def mk_dataset(
             )
         else:
             dims = ("time", *gbox.dimensions)
-            shape = (len(time), *gbox.shape.yx)
+            shape = (len(times), *gbox.shape.yx)
 
         data = _alloc(
             shape,
@@ -605,16 +619,27 @@ def chunked_load(
     srcs: Sequence[MultiBandRasterSource],
     tyx_bins: Mapping[Tuple[int, int, int], List[int]],
     gbt: GeoboxTiles,
-    tss: Sequence[datetime],
+    times: Sequence[datetime],
     env: Dict[str, Any],
-    rdr: ReaderDriver,
+    reader_driver: ReaderDriver,
     *,
     chunks: Mapping[str, int | Literal["auto"]] | None = None,
     pool: ThreadPoolExecutor | int | None = None,
     progress: Optional[Any] = None,
 ) -> xr.Dataset:
     """
-    Route to either direct or dask chunked load.
+    Load raster data in chunks from a list of datasources
+
+    If `chunks` is provided, return a lazy dask Dataset.
+
+    Otherwise, load directly into an xr.Dataset and return.
+
+    Direct loads can be parallelised by specifying a `pool` size.
+    If `pool` is not specified, data loading will be done serially.
+
+    If loading directly, a `progress` function can be provided to wrap the iterable
+    of load tasks like tqdm.
+
     """
     # pylint: disable=too-many-arguments
     if chunks is None:
@@ -624,9 +649,9 @@ def chunked_load(
             srcs,
             tyx_bins,
             gbt,
-            tss,
+            times,
             env,
-            rdr,
+            reader_driver,
             pool=pool,
             progress=progress,
         )
@@ -636,9 +661,9 @@ def chunked_load(
         srcs,
         tyx_bins,
         gbt,
-        tss,
+        times,
         env,
-        rdr,
+        reader_driver,
         chunks=chunks,
     )
 
@@ -794,7 +819,7 @@ def direct_chunked_load(
     srcs: Sequence[MultiBandRasterSource],
     tyx_bins: Mapping[Tuple[int, int, int], List[int]],
     gbt: GeoboxTiles,
-    tss: Sequence[datetime],
+    times: Sequence[datetime],
     env: Dict[str, Any],
     rdr: ReaderDriver,
     *,
@@ -805,13 +830,13 @@ def direct_chunked_load(
     Load in chunks but without using Dask.
     """
     # pylint: disable=too-many-locals
-    nt = len(tss)
+    nt = len(times)
     nb = len(load_cfg)
     gbox = gbt.base
     assert isinstance(gbox, GeoBox)
     ds = mk_dataset(
         gbox,
-        tss,
+        times,
         load_cfg,
         template=template,
     )
@@ -835,7 +860,7 @@ def direct_chunked_load(
                     ydim=ydim,
                 )
         t, y, x = task.idx_tyx
-        return (task.band, t, y, x)
+        return task.band, t, y, x
 
     tasks = load_tasks(
         load_cfg,

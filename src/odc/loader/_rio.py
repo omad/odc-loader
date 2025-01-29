@@ -418,13 +418,13 @@ def _do_read(
     dst_nodata = resolve_dst_nodata(_dst.dtype, cfg, src_nodata)
 
     if roi_is_empty(roi_dst):
-        return (roi_dst, _dst)
+        return roi_dst, _dst
 
     if roi_is_empty(rr.roi_src):
         # no overlap case
         if dst_nodata is not None:
             np.copyto(_dst, dst_nodata)
-        return (roi_dst, _dst)
+        return roi_dst, _dst
 
     if rr.paste_ok and rr.read_shrink == 1:
         rdr.read(src.bidx, out=_dst, window=w_[rr.roi_src])
@@ -447,7 +447,7 @@ def _do_read(
             resampling=resampling,
         )
 
-    return (roi_dst, _dst)
+    return roi_dst, _dst
 
 
 def rio_read(

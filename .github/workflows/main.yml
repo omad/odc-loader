@@ -49,6 +49,17 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  build-and-inspect-package:
+    name: Build & inspect package.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: hynek/build-and-inspect-python-package@v2
+
   build:
     needs: [quality, run-tests]
     name: Build distribution 📦
@@ -75,7 +86,7 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
-  release:
+  check-release:
     needs: [build]
 
     runs-on: ubuntu-latest
@@ -163,7 +174,24 @@ jobs:
           asset_path: ./dist/*
           asset_name: ${{ github.event.repository.name }}-${{ steps.version.outputs.tag_version }}.tar.gz
           asset_content_type: application/gzip
+  # Upload to real PyPI on GitHub Releases.
+  release-pypi:
+    name: Publishe released package to pypi.org
+    needs: build-and-inspect-package
+    environment: release-pypi
+    if: github.repository_owner == 'opendatacube' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    permissions:
+      # IMPORTANT: this permission is mandatory for trusted publishing, but
+      # should NOT be granted anywhere else!
+      id-token: write
 
-      - name: Publish to PyPI
-        if: steps.version_check.outputs.status == 'ok'
-        uses: pypa/gh-action-pypi-publish@v1.8.11
+    steps:
+      - name: Download packages built by build-and-inspect-python-package
+        uses: actions/download-artifact@v4
+        with:
+          name: Packages
+          path: dist
+
+      - name: Upload package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

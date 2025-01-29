@@ -325,7 +325,7 @@ MultiBandRasterSource = Union[
 @dataclass
 class RasterLoadParams:
     """
-    Captures data loading configuration.
+    Captures data loading configuration for a single band or measurement.
     """
 
     # pylint: disable=too-many-instance-attributes
@@ -491,6 +491,8 @@ class DaskRasterReader(Protocol):
 class ReaderDriver(Protocol):
     """
     Protocol for reader drivers.
+
+    Wraps up a RasterReader and a DaskRasterReader
     """
 
     def new_load(

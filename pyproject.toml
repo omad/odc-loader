@@ -2,7 +2,7 @@
 name = "odc-loader"
 description = "Tooling for constructing xarray objects from parsed metadata"
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">=3.10,<3.13"
 license = {file = "LICENSE"}
 dependencies = [
     "odc-geo>=0.4.7",
@@ -32,7 +32,7 @@ Homepage = "https://github.com/opendatacube/odc-loader/"
 [project.optional-dependencies]
 botocore = ["botocore"]
 zarr = [
-    "zarr>=2.18.3",
+    "zarr>=2.18.3,<3",
 ]
 
 [build-system]
