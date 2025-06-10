@@ -33,7 +33,14 @@ Homepage = "https://github.com/opendatacube/odc-loader/"
 
 [project.optional-dependencies]
 botocore = ["botocore"]
-zarr = ["zarr>=2.18.3,<3"]
+zarr = ["zarr>=2.18.3"]
+dev = [
+    "coverage>=7.6.7",
+    "geopandas>=1.0.1",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.1",
+    "pytest>=8.3.3",
+]
 
 [build-system]
 requires = ["flit_core >=3.2,<4"]
@@ -69,10 +76,5 @@ disable = [
 ]
 
 [dependency-groups]
-dev = [
-    "coverage>=7.6.7",
-    "geopandas>=1.0.1",
-    "mypy>=1.13.0",
-    "pre-commit>=4.0.1",
-    "pytest>=8.3.3",
-]
+# dev group moved to project.optional-dependencies
+dev = []
