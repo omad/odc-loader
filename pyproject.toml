@@ -3,7 +3,7 @@ version = "0.5.1"
 name = "odc-loader"
 description = "Tooling for constructing xarray objects from parsed metadata"
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">= 3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "odc-geo>=0.4.7",
@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.20.0",
     "xarray>=0.19",
     "typing-extensions>=4.2.0",
+    "zarr>=3,<4",
 ]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
@@ -77,4 +78,10 @@ disable = [
 
 [dependency-groups]
 # dev group moved to project.optional-dependencies
-dev = []
+dev = [
+    "coverage>=7.6.8",
+    "geopandas>=1.0.1",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.1",
+    "pytest>=8.3.3",
+]

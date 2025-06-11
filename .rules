@@ -1,0 +1,57 @@
+# LLM Instructions
+
+## Quick Reference
+
+- Dependency and environment management: `uv`
+  - `uv add [package]` -- add dependency
+  - `uv add --dev [package]` -- add dev dependency
+  - `uv run [command in .venv context]` -- run a command in the project environment
+  - `pyproject.toml` -- Python project configuration
+- Tests:
+  - Run with: `uv run pytest`
+- Test the server implementation using the test app (see details below): `uv run devservers`
+
+## Coding Guidelines
+
+- **NO trivial comments**
+- Python 3.13+, type hints, PEP 8
+- Follow OWASP security practices
+- Handle errors explicitly
+- Use Ruff for linting and formatting:
+  - `uv run ruff check --fix path/to/file.py` -- fix all fixable linting errors
+  - `uv run ruff format path/to/file.py` -- format
+- When you're done writing code, strip all comments and docstrings from the generated code, unless they're critical for understanding an especially complex piece
+
+
+## Key Requirements
+
+- **Environment**: Prepend all shell commands with `PATH=$PATH:$HOME/.local/bin`
+- **Date retrieval**: Use `date +%Y-%m-%d` for AI changelog dates. If unavailable, use `1970-01-01` placeholder
+- **Tools**: Follow project instructions exactly - use `uv` not `pip`, use provided tools/commands only
+- **Completion criteria**: All tests must pass and changelog must be updated per instructions
+
+
+## Writing Tests
+
+- Write meaningful tests, not coverage fillers
+- Always use pytest functions, never use classes
+- When creating or fixing tests, always run **the full test suite** to make sure all tests pass
+
+### What Tests Should Focus On:
+1. **Real user workflows** - not implementation details
+2. **Failure modes** - how does it break and recover?
+3. **Configuration variations** - different setups users actually use
+4. **Integration points** - where components interact
+5. **Performance characteristics** - memory, startup time, responsiveness
+
+### What Tests Should Avoid:
+1. Testing framework code (Textual, FastMCP internals)
+2. Testing language features (Python dict access, etc.)
+3. Testing third-party library behavior
+4. Overly specific string matching
+5. Implementation details that could change
+
+
+## Finally
+
+To acknowledge that you have read and understood these instructions, always start your first message to the user with "I have read and understood the LLM Instructions and will follow them to the letter."
