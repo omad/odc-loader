@@ -186,24 +186,90 @@ def test_memreader_zarr(sample_ds: xr.Dataset) -> None:
     assert "xx" in sample_ds
 
     zarr = pytest.importorskip("zarr")
+    # import zarr.storage # No longer attempting FSStore
     assert zarr is not None
     _gbox = sample_ds.odc.geobox
     assert _gbox is not None
     gbox = _gbox.approx if isinstance(_gbox, GCPGeoBox) else _gbox
 
-    md_store: dict[str, bytes] = {}
-    chunk_store: dict[str, bytes] = {}
-    sample_ds.to_zarr(md_store, chunk_store, compute=False, consolidated=True)
+    # 1.a. Manually create the Zarr v3 store in raw_dict_store = {}
+    raw_dict_store: dict[str, bytes] = {}
+    root_group = zarr.group(store=raw_dict_store, overwrite=True)
 
-    assert ".zmetadata" in md_store
-    zmd = json.loads(md_store[".zmetadata"])["metadata"]
+    data_array = sample_ds["xx"]
+    data = data_array.data
+    shape = data_array.shape
+    dtype = data_array.dtype
+    attrs = data_array.attrs.copy()
+    chunks = shape
+
+    z_array = root_group.create_dataset(
+        "xx", shape=shape, dtype=dtype, chunks=chunks, overwrite=True
+    )
+
+    final_attrs = attrs.copy()
+    final_attrs["_XARRAY_DIMENSIONS"] = list(data_array.dims)
+    z_array.attrs.put(final_attrs)
+
+    z_array[:] = data
+
+    # Assert basic Zarr v3 structure
+    assert "zarr.json" in raw_dict_store
+    assert "xx/zarr.json" in raw_dict_store
+
+    # 1.b. Diagnostic code
+    print(f"Type of raw_dict_store['xx/zarr.json']: {type(raw_dict_store.get('xx/zarr.json'))}")
+    # Attempt to print content of xx/zarr.json (if it's bytes)
+    try:
+        xx_zarr_json_entry = raw_dict_store.get('xx/zarr.json')
+        if isinstance(xx_zarr_json_entry, bytes):
+            print(f"xx/zarr.json (decoded content): {xx_zarr_json_entry.decode('utf-8')}")
+        elif hasattr(xx_zarr_json_entry, 'data') and isinstance(xx_zarr_json_entry.data, bytes): # For zarr.Buffer
+             print(f"xx/zarr.json (decoded content via .data): {xx_zarr_json_entry.data.decode('utf-8')}")
+        else:
+            print(f"xx/zarr.json content is not raw bytes or accessible via .data. Type: {type(xx_zarr_json_entry)}")
+    except Exception as e_print_json:
+        print(f"Error printing xx/zarr.json content: {e_print_json}")
+
+    opened_zarr_group = None
+    try:
+        print("Attempting zarr.open_group(store=raw_dict_store)...")
+        opened_zarr_group = zarr.open_group(store=raw_dict_store, mode='r')
+        print(f"Successfully opened zarr group: {opened_zarr_group}")
+        if 'xx' in opened_zarr_group:
+            print(f"Array 'xx' in group: {opened_zarr_group['xx']}")
+            print(f"Attributes of 'xx': {opened_zarr_group['xx'].attrs.asdict()}")
+        else:
+            print("'xx' array not found in opened_zarr_group.")
+    except Exception as e_zarr_open:
+        print(f"zarr.open_group(store=raw_dict_store) failed: {e_zarr_open}")
+        import traceback
+        traceback.print_exc()
+
+    if opened_zarr_group:
+        try:
+            print("Attempting xr.open_dataset(opened_zarr_group, engine='zarr')...")
+            ds_opened_via_zarr_group = xr.open_dataset(opened_zarr_group, engine='zarr', chunks={})
+            print(f"Successfully opened xarray dataset via zarr.Group: {ds_opened_via_zarr_group}")
+            if 'xx' in ds_opened_via_zarr_group:
+                print(f"Xarray 'xx' var: {ds_opened_via_zarr_group['xx']}")
+                print(f"Xarray 'xx' dims: {ds_opened_via_zarr_group['xx'].dims}")
+            else:
+                print("'xx' var not found in dataset opened via zarr.Group.")
+        except Exception as e_xr_open:
+            print(f"xr.open_dataset(opened_zarr_group) failed: {e_xr_open}")
+            import traceback
+            traceback.print_exc()
+
+    # Existing test logic continues below, using raw_dict_store as zmd
+    zmd = raw_dict_store
 
     src = RasterSource(
-        "file:///tmp/no-such-dir/xx.zarr",
+        "mem://xx.zarr",
         subdataset="xx",
         driver_data=zmd,
     )
-    assert src.driver_data is zmd
+    assert src.driver_data is raw_dict_store
     cfg = RasterLoadParams.same_as(src)
 
     driver = XrMemReaderDriver()

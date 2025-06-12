@@ -152,62 +152,105 @@ def from_raster_source(
             subdataset = str(_first)
         return driver_data.data_vars[subdataset]
 
-    spec = extract_zarr_spec(driver_data)
-    assert spec is not None
+    # Path for Zarr v3 dict stores
+    if isinstance(driver_data, dict) and "zarr.json" in driver_data:
+        # Assume driver_data is a Zarr v3 store (dict)
+        # For xr.open_zarr, chunk_store={} means don't load chunk data, just metadata
+        # For da.from_zarr, the store itself (driver_data) contains chunk locations.
+        zarr_store = driver_data
+        # Use an empty chunk_store for xr.open_zarr to avoid loading data
+        ds_template = xr.open_zarr(
+            zarr_store, consolidated=False, decode_coords="all", chunks={}, chunk_store={}
+        )
 
-    # Chunk store resolution
-    # 1. Use supplied chunk_store
-    # 2. Use ctx.fs if available
-    # 3. Use fsspec.get_mapper(src.uri)
+        if subdataset is None:
+            # If subdataset is not specified, try to infer it (e.g. first variable)
+            # This might need adjustment based on how Zarr groups with single arrays are handled
+            _first, *_ = ds_template.data_vars
+            subdataset = str(_first)
+            if not subdataset: # Or if ds_template has no data_vars (it's an array not group)
+                # This case happens if the zarr_store directly represents an array.
+                # xr.open_zarr might return a DataArray directly if path="" and it's an array.
+                # However, we expect a Dataset from open_zarr for consistency here.
+                # If driver_data is a dict representing a single array, open_zarr might behave differently.
+                # For now, assume subdataset path is relative to the group opened by open_zarr.
+                # If the store IS the array, subdataset might need to be None or "/" for da.from_zarr.
+                # This logic path assumes driver_data is a group containing the subdataset.
+                pass
 
-    if chunk_store is None:
-        if ctx.fs:
-            chunk_store = ctx.fs
-        else:
-            chunk_store = fsspec.get_mapper(src.uri)
 
-    if isinstance(chunk_store, fsspec.AbstractFileSystem):
-        chunk_store = chunk_store.get_mapper(src.uri)
+        assert subdataset is not None, "Subdataset must be specified or inferable for Zarr dict store"
+        assert subdataset in ds_template.data_vars, f"Subdataset '{subdataset}' not found in Zarr dict store"
 
-    # create unloadable xarray.Dataset
-    ds = xr.open_zarr(
-        spec, consolidated=False, decode_coords="all", chunks={}, chunk_store={}
-    )
-    assert subdataset is not None
-    assert subdataset in ds.data_vars
+        template_da = ds_template.data_vars[subdataset]
 
-    # recreate xr.DataArray with all the dims/coords/attrs
-    # but this time loadable from chunk_store
-    xx = ds.data_vars[subdataset]
-    assert isinstance(xx.odc, ODCExtensionDa)
+        # Determine component path for da.from_zarr
+        # If zarr_store is the root, subdataset is usually the direct component path.
+        component_path = subdataset
 
-    # regen coords using geobox if available
-    # 1. Geobox supplied by caller
-    # 2. Geobox from xarray.DataArray metadata
-    # 3. Geobox from RasterSource
-    if geobox is None:
-        geobox = xx.odc.geobox
-        if geobox is None:
-            geobox = src.geobox
-
-    coords = {**xx.coords}
-    if geobox is not None:
-        assert isinstance(geobox, (GeoBox, GCPGeoBox))
-        coords.update(xr_coords(geobox, dims=xx.odc.spatial_dims or ("y", "x")))
-
-    xx = xr.DataArray(
-        da.from_zarr(
-            spec,
-            component=subdataset,
-            chunk_store=chunk_store,
+        arr = da.from_zarr(
+            zarr_store,
+            component=component_path,
             **kw,
-        ),
+        )
+    else:
+        # Existing logic for other types of driver_data (e.g., consolidated Zarr v2 spec)
+        spec = extract_zarr_spec(driver_data)
+        assert spec is not None, "Failed to extract Zarr spec from driver_data"
+
+        # Chunk store resolution for existing logic
+        resolved_chunk_store = chunk_store
+        if resolved_chunk_store is None:
+            if ctx.fs:
+                resolved_chunk_store = ctx.fs
+            else:
+                resolved_chunk_store = fsspec.get_mapper(src.uri)
+
+        if isinstance(resolved_chunk_store, fsspec.AbstractFileSystem):
+            resolved_chunk_store = resolved_chunk_store.get_mapper(src.uri)
+
+        ds_template = xr.open_zarr(
+            spec, consolidated=False, decode_coords="all", chunks={}, chunk_store={}
+        )
+        assert subdataset is not None, "Subdataset must be specified for non-dict Zarr store"
+        assert subdataset in ds_template.data_vars, f"Subdataset '{subdataset}' not found in Zarr spec"
+
+        template_da = ds_template.data_vars[subdataset]
+
+        # For da.from_zarr with spec, component is relative to the spec's root.
+        # If spec is already for the specific array, component might be None.
+        # Assuming spec is a group containing subdataset.
+        component_path = subdataset
+
+        arr = da.from_zarr(
+            spec, # spec here is the metadata dict
+            component=component_path,
+            chunk_store=resolved_chunk_store, # Pass resolved_chunk_store for data access
+            **kw,
+        )
+
+    # Common logic for creating the final xr.DataArray
+    assert isinstance(template_da.odc, ODCExtensionDa)
+
+    # Regen coords using geobox if available
+    current_geobox = geobox
+    if current_geobox is None:
+        current_geobox = template_da.odc.geobox
+        if current_geobox is None:
+            current_geobox = src.geobox
+
+    coords = {**template_da.coords}
+    if current_geobox is not None:
+        assert isinstance(current_geobox, (GeoBox, GCPGeoBox))
+        coords.update(xr_coords(current_geobox, dims=template_da.odc.spatial_dims or ("y", "x")))
+
+    return xr.DataArray(
+        arr,
         coords=coords,
-        dims=xx.dims,
-        name=xx.name,
-        attrs=xx.attrs,
+        dims=template_da.dims,
+        name=template_da.name,
+        attrs=template_da.attrs,
     )
-    return xx
 
 
 class XrMemReader:
