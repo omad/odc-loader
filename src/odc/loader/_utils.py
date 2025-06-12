@@ -1,5 +1,10 @@
 """
-Generic tools with only standard lib dependencies.
+odc.loader._utils
+=================
+
+This module provides generic utility functions and classes used within `odc-loader`.
+These utilities are designed to have minimal dependencies, typically relying only on
+the Python standard library.
 """
 
 from concurrent.futures import ThreadPoolExecutor

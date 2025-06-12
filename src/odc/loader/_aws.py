@@ -3,7 +3,13 @@
 # Copyright (c) 2015-2020 ODC Contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-Helper methods for working with AWS
+odc.loader._aws
+===============
+
+This module provides utility functions for interacting with Amazon Web Services (AWS),
+particularly for discovering EC2 instance metadata (like current region) and managing
+AWS credentials and sessions for S3 access. These are often used when data sources
+are located in S3 buckets.
 """
 import json
 import os
@@ -28,6 +34,13 @@ __all__ = (
 
 
 def _fetch_text(url: str, timeout: float = 0.1) -> Optional[str]:
+    """
+    Fetch text content from a URL.
+
+    :param url: URL to fetch.
+    :param timeout: Connection and read timeout in seconds.
+    :return: Decoded text content if successful and HTTP status is 2xx, else None.
+    """
     try:
         with urlopen(url, timeout=timeout) as resp:
             if 200 <= resp.getcode() < 300:
@@ -146,6 +159,14 @@ def mk_boto_session(
 
 
 def aws_unsigned_check_env() -> bool:
+    """
+    Check environment variables for AWS unsigned request flags.
+
+    Checks for AWS_UNSIGNED or AWS_NO_SIGN_REQUEST environment variables.
+    Recognizes "YES", "Y", "TRUE", "T", "1" (case-insensitive) as True.
+
+    :return: True if an unsigned request flag is set and true, False otherwise.
+    """
     def parse_bool(v: str) -> bool:
         return v.upper() in ("YES", "Y", "TRUE", "T", "1")
 

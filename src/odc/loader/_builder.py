@@ -1,4 +1,13 @@
-"""stac.load - dc.load from STAC Items."""
+"""
+odc.loader._builder
+===================
+
+This module is responsible for constructing xarray Datasets from metadata and
+raster sources. It defines the logic for direct loading and for building Dask graphs
+to enable lazy and parallel data loading. Key functionalities include managing
+load tasks, resolving source data, handling different chunking strategies,
+and orchestrating data reading and fusion.
+"""
 
 from __future__ import annotations
 
@@ -58,7 +67,11 @@ DaskBuilderMode = Literal["mem", "concurrency"]
 
 
 class MkArray(Protocol):
-    """Internal interface."""
+    """
+    Protocol for a generic array constructor.
+
+    This can be `numpy.empty`, `dask.array.empty`, or a custom allocator.
+    """
 
     # pylint: disable=too-few-public-methods
     def __call__(
@@ -149,6 +162,14 @@ class LoadChunkTask:
 
 
 def _default_dask_mode() -> DaskBuilderMode:
+    """
+    Determine the default Dask mode from environment variable ODC_STAC_DASK_MODE.
+
+    Defaults to "mem" if the environment variable is not set or invalid.
+    Recognized values: "mem", "concurrency".
+
+    :return: The Dask builder mode.
+    """
     mode = os.environ.get("ODC_STAC_DASK_MODE", "mem")
     if mode == "concurrency":
         return "concurrency"
@@ -174,6 +195,19 @@ class DaskGraphBuilder:
         chunks: Mapping[str, int],
         mode: DaskBuilderMode | Literal["auto"] = "auto",
     ) -> None:
+        """
+        Initialize DaskGraphBuilder.
+
+        :param cfg: Configuration for each band.
+        :param template: Raster group metadata template.
+        :param srcs: Sequence of multiband raster sources.
+        :param tyx_bins: Mapping of (time, y, x) tile index to source indices.
+        :param gbt: GeoboxTiles defining the spatial tiling scheme.
+        :param env: Environment settings for the reader driver.
+        :param rdr: Reader driver instance.
+        :param chunks: Chunking scheme for output Dask arrays.
+        :param mode: Dask builder mode ('mem' or 'concurrency').
+        """
         gbox = gbt.base
         assert isinstance(gbox, GeoBox)
         # make sure chunks for tyx match our structure
@@ -218,6 +252,14 @@ class DaskGraphBuilder:
         time: Sequence[datetime],
         bands: Mapping[str, RasterLoadParams],
     ) -> xr.Dataset:
+        """
+        Build an xr.Dataset with Dask arrays for the specified bands.
+
+        :param gbox: The target GeoBox for the dataset.
+        :param time: Sequence of datetime objects for the time dimension.
+        :param bands: Mapping of band names to their load parameters.
+        :return: An xr.Dataset with Dask arrays.
+        """
         return mk_dataset(
             gbox,
             time,
@@ -303,6 +345,18 @@ class DaskGraphBuilder:
         name: Hashable,
         ydim: int,
     ) -> Any:
+        """
+        Construct a Dask array for a single band.
+
+        This method is called by Dask when constructing arrays. It sets up the
+        Dask graph for loading and processing the data for the specified band.
+
+        :param shape: The shape of the array to be constructed.
+        :param dtype: The data type of the array.
+        :param name: The name of the band (must be a string).
+        :param ydim: The index of the 'y' dimension in the output array.
+        :return: A Dask array for the band.
+        """
         # pylint: disable=too-many-locals
         assert isinstance(name, str)
 
@@ -408,6 +462,17 @@ def _dask_open_reader(
     env: Dict[str, Any],
     load_state: Any,
 ) -> RasterReader:
+    """
+    Dask task to open a raster source using the reader driver.
+
+    Restores the environment and opens the source within that context.
+
+    :param src: The RasterSource to open.
+    :param rdr: The ReaderDriver instance.
+    :param env: Captured environment for the driver.
+    :param load_state: Current load state for the driver.
+    :return: An opened RasterReader.
+    """
     with rdr.restore_env(env, load_state) as ctx:
         return rdr.open(src, ctx)
 
@@ -423,7 +488,26 @@ def _dask_loader_tyx(
     env: Dict[str, Any],
     load_state: Any,
     selection: Any | None = None,
-):
+) -> np.ndarray:
+    """
+    Dask task to load data for a specific time-y-x chunk.
+
+    This function is used when `DaskGraphBuilder` is in 'mem' mode.
+    It iterates through time slices within the chunk, loading data from
+    the appropriate sources.
+
+    :param srcs: Sequence of sequences of RasterReaders (outer: time, inner: sources for that time).
+    :param gbt: GeoboxTiles instance.
+    :param iyx: Index (y, x) of the spatial tile within GeoboxTiles.
+    :param prefix_dims: Shape of dimensions preceding 'y'.
+    :param postfix_dims: Shape of dimensions following 'x'.
+    :param cfg: RasterLoadParams for this band.
+    :param rdr: ReaderDriver instance.
+    :param env: Captured environment for the driver.
+    :param load_state: Current load state for the driver.
+    :param selection: Optional selection for extra dimensions.
+    :return: A numpy array containing the loaded data for the chunk.
+    """
     assert cfg.dtype is not None
     gbox = cast(GeoBox, gbt[iyx])
     chunk = np.empty(
@@ -445,7 +529,22 @@ def _dask_fuser(
     dtype: DTypeLike,
     fill_value: float | int,
     src_ydim: int = 0,
-):
+) -> np.ndarray:
+    """
+    Dask task to fuse data from multiple sources for a chunk.
+
+    This function is used when `DaskGraphBuilder` is in 'concurrency' mode.
+    It takes futures (already loaded data slices) and fuses them into a
+    single chunk array.
+
+    :param srcs: List of lists of futures, each future resolves to (roi, pixels).
+                 Outer list corresponds to time, inner to sources for that time.
+    :param shape: The shape of the output chunk.
+    :param dtype: The data type of the output chunk.
+    :param fill_value: Fill value for empty areas.
+    :param src_ydim: Index of the 'y' dimension in the source pixel arrays.
+    :return: A numpy array containing the fused data for the chunk.
+    """
     assert shape[0] == len(srcs)
     assert len(shape) >= 3  # time, ..., y, x, ...
 
@@ -493,12 +592,27 @@ def _fill_nd_slice(
     dst: Any,
     ydim: int = 0,
     selection: Any | None = None,
-) -> Any:
+) -> np.ndarray:
+    """
+    Fill a single N-D slice of the destination array by reading and fusing data.
+
+    This reads data from multiple `RasterReader` sources for a given destination
+    geobox and configuration, then fuses them into the provided `dst` array.
+    The `dst` array is modified in-place.
+
+    `nodata` marks missing pixels, but it might be None (everything is valid).
+    `fill_value` is the initial value to use; it's equal to `nodata` when set,
+    otherwise defaults to NaN for floats and 0 for integers.
+
+    :param srcs: Sequence of `RasterReader` instances for this slice.
+    :param dst_gbox: The `GeoBox` of the destination slice.
+    :param cfg: `RasterLoadParams` for loading.
+    :param dst: The destination numpy array slice to fill.
+    :param ydim: The starting index of the 'y' dimension in the `dst` array.
+    :param selection: Optional sub-selection for extra dimensions.
+    :return: The destination `dst` array, filled with data.
+    """
     # TODO: support masks not just nodata based fusing
-    #
-    # ``nodata``     marks missing pixels, but it might be None (everything is valid)
-    # ``fill_value`` is the initial value to use, it's equal to ``nodata`` when set,
-    #                otherwise defaults to .nan for floats and 0 for integers
     # pylint: disable=too-many-locals
 
     assert dst.shape[ydim : ydim + 2] == dst_gbox.shape.yx
@@ -531,6 +645,22 @@ def mk_dataset(
     *,
     template: RasterGroupMetadata,
 ) -> xr.Dataset:
+    """
+    Create an xr.Dataset with appropriate coordinates and empty/Dask arrays.
+
+    This function sets up the structure of the output Dataset, including
+    spatial and time coordinates, and coordinates for any extra dimensions
+    defined in the template. Arrays are allocated using the provided `alloc`
+    function (which could be `numpy.empty` or a Dask array constructor).
+
+    :param gbox: The `GeoBox` defining the spatial grid.
+    :param time: Sequence of `datetime` objects for the time dimension.
+    :param bands: Mapping of band names to `RasterLoadParams`.
+    :param alloc: Optional array allocation function (e.g., `numpy.empty` or `dask.array.empty`).
+                  If None, `numpy.empty` is used.
+    :param template: `RasterGroupMetadata` providing details about bands and extra dimensions.
+    :return: An `xr.Dataset` with the defined structure.
+    """
     coords = xr_coords(gbox)
     crs_coord_name: Hashable = list(coords)[-1]
     coords["time"] = xr.DataArray(time, dims=("time",))
@@ -685,8 +815,31 @@ def dask_chunked_load(
 
 
 def denorm_ydim(x: tuple[T, ...], ydim: int) -> tuple[T, ...]:
-    ydim = ydim - 1
-    if ydim == 0:
+    """
+    Adjusts a tuple (typically representing shape or chunks) from (T, Y, X, ...)
+    to (T, ..., Y, X, ...) based on the ydim index.
+
+    This is used to map between a canonical (T, Y, X, extra_dims...) order and
+    an order where extra dimensions might be interleaved before Y.
+
+    Example: if ydim=2, (t,y,x,b) -> (t,b,y,x)
+             if ydim=1, (t,y,x,b) -> (t,y,x,b) (no change if ydim is already at index 1 after T)
+
+
+    :param x: Input tuple, expected to have at least Time, Y, X.
+    :param ydim: The target index for the 'Y' dimension, relative to start (0=T, 1=Y, ...).
+                 However, interpretation is "1-based for Y after T". So ydim=1 means (T,Y,X),
+                 ydim=2 means (T, E1, Y, X).
+    :return: Rearranged tuple.
+    """
+    # ydim in this context is often cfg.ydim + 1 (for time).
+    # cfg.ydim is 0 if dims are (y,x), 1 if (e1,y,x) etc.
+    # So, if ydim_arg is 1 (from cfg.ydim=0 + 1), it means (T, Y, X, ...), no change needed after T.
+    # If ydim_arg is 2 (from cfg.ydim=1 + 1), it means (T, E1, Y, X, ...).
+    # The logic here shifts elements *between* T and Y.
+    # Effective ydim for manipulation is ydim_arg - 1 to account for T at index 0.
+    effective_ydim_in_extras = ydim - 1
+    if effective_ydim_in_extras == 0:  # Y is immediately after T
         return x
     t, y, x, *rest = x
     return (t, *rest[:ydim], y, x, *rest[ydim:])
@@ -865,6 +1018,15 @@ def _largest_dtype(
     cfg: Mapping[str, RasterLoadParams] | None,
     fallback: str | np.dtype = "float32",
 ) -> np.dtype:
+    """
+    Determine the largest data type among the configured bands.
+
+    Used to select a common dtype for operations if not otherwise specified.
+
+    :param cfg: Mapping of band names to RasterLoadParams.
+    :param fallback: Default dtype if no types are found or if cfg is None.
+    :return: The numpy.dtype that is largest (by itemsize).
+    """
     if isinstance(fallback, str):
         fallback = np.dtype(fallback)
 
@@ -889,6 +1051,20 @@ def resolve_chunks(
     extra_dims: Mapping[str, int] | None = None,
     limit: Any | None = None,
 ) -> tuple[tuple[int, ...], ...]:
+    """
+    Normalize chunk specifications against a given shape and data type.
+
+    This function translates a user-provided chunk mapping (which can use names like
+    "time", "y", "x", and names of extra dimensions, and can include -1 or "auto")
+    into a fully specified tuple of chunk tuples, as required by Dask.
+
+    :param base_shape: The basic shape (time, y, x) of the data.
+    :param chunks: Mapping of dimension names to chunk sizes (int or "auto").
+    :param dtype: Data type of the array, used by `dask.array.core.normalize_chunks`.
+    :param extra_dims: Mapping of extra dimension names to their sizes.
+    :param limit: Optional memory limit for "auto" chunking.
+    :return: A tuple of tuples, where each inner tuple defines chunk sizes for a dimension.
+    """
     if extra_dims is None:
         extra_dims = {}
     tt = chunks.get("time", 1)

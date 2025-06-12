@@ -1,5 +1,12 @@
 """
+odc.loader
+==========
+
 Tools for constructing xarray objects from parsed metadata.
+
+This library provides the core functionality for loading data into xarray DataArrays
+and Datasets based on metadata descriptions, handling aspects like data source
+reading, chunking, and parallel processing with Dask.
 """
 
 from ._builder import chunked_load, resolve_chunk_shape

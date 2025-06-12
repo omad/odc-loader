@@ -1,5 +1,18 @@
 """
-Reader Driver from in-memory xarray/zarr spec docs.
+odc.loader._zarr
+================
+
+This module provides a reader driver (`XrMemReaderDriver`) for handling
+in-memory xarray Datasets/DataArrays and Zarr specifications. It allows
+`odc-loader` to treat these data sources similarly to file-based rasters.
+
+Key components:
+- `XrMemReaderDriver`: Implements `ReaderDriver` for Xarray/Zarr sources.
+- `XrMDPlugin`: Metadata parser for Xarray Datasets.
+- `XrMemReader`: Reader for in-memory Xarray DataArrays.
+- `XrMemReaderDask`: Dask-enabled reader for Xarray DataArrays.
+- Utility functions for converting Zarr specs and Xarray objects to
+  `odc-loader`'s internal types.
 """
 
 from __future__ import annotations
@@ -57,10 +70,17 @@ class XrMDPlugin:
         template: RasterGroupMetadata,
         fallback: xr.Dataset | None = None,
     ) -> None:
+        """
+        Initialize XrMDPlugin.
+
+        :param template: A base `RasterGroupMetadata` to use as a template.
+        :param fallback: An optional `xr.Dataset` to use if metadata extraction from `md` fails.
+        """
         self._template = template
         self._fallback = fallback
 
     def _resolve_src(self, md: Any, regen_coords: bool = False) -> xr.Dataset | None:
+        """Internal helper to resolve input metadata `md` to an `xr.Dataset`."""
         return _resolve_src_dataset(
             md, regen_coords=regen_coords, fallback=self._fallback, chunks={}
         )
@@ -107,6 +127,13 @@ class Context:
         chunks: None | dict[str, int],
         driver: Any | None = None,
     ) -> None:
+        """
+        Initialize Context.
+
+        :param geobox: The target `GeoBox` for the load operation.
+        :param chunks: Optional chunking dictionary. If provided, `GeoboxTiles` are computed.
+        :param driver: Optional reference to the parent driver instance.
+        """
         gbt: GeoboxTiles | None = None
         if chunks is not None:
             cy, cx = (
@@ -120,6 +147,12 @@ class Context:
         self.gbt = gbt
 
     def with_env(self, env: dict[str, Any]) -> "Context":
+        """
+        Create a new Context instance with an updated environment (currently a no-op).
+
+        :param env: Environment dictionary (not used by this context).
+        :return: A new `Context` instance with the same properties.
+        """
         assert isinstance(env, dict)
         return Context(self.geobox, self.chunks, driver=self.driver)
 
@@ -140,6 +173,26 @@ def from_raster_source(
     geobox: GeoBoxBase | None = None,
     **kw,  # da.from_zarr options
 ) -> xr.DataArray:
+    """
+    Construct an `xr.DataArray` from a `RasterSource` containing Zarr/Xarray driver data.
+
+    This function handles different forms of `driver_data` in the `RasterSource`:
+    - If `driver_data` is already an `xr.DataArray`, it's returned.
+    - If `driver_data` is an `xr.Dataset`, the variable specified by `src.subdataset` is returned.
+    - If `driver_data` is a Zarr spec document (dictionary), it constructs an `xr.DataArray`
+      backed by `dask.array.from_zarr`.
+
+    It resolves the chunk store (for Zarr) and geobox information, prioritizing
+    caller-supplied values, then metadata within the xarray object, then from `RasterSource`.
+
+    :param src: The `RasterSource` providing the data or Zarr spec.
+    :param ctx: The `Context` for this load operation, providing filesystem access if needed.
+    :param chunk_store: Optional fsspec-compatible chunk store for Zarr. If None, derived
+                        from `ctx.fs` or `src.uri`.
+    :param geobox: Optional `GeoBoxBase` to use for regenerating coordinates.
+    :param kw: Additional keyword arguments passed to `dask.array.from_zarr`.
+    :return: An `xr.DataArray` representing the raster data.
+    """
     driver_data: xr.DataArray | xr.Dataset | SomeDoc = src.driver_data
     subdataset = src.subdataset
 
@@ -219,6 +272,11 @@ class XrMemReader:
     """
 
     def __init__(self, src: xr.DataArray) -> None:
+        """
+        Initialize XrMemReader.
+
+        :param src: The `xr.DataArray` to be read from.
+        """
         self._src = src
 
     def read(
@@ -259,6 +317,13 @@ class XrMemReaderDask:
         cfg: RasterLoadParams | None = None,
         layer_name: str = "",
     ) -> None:
+        """
+        Initialize XrMemReaderDask.
+
+        :param src: Optional `xr.DataArray` source. Usually set by `open` method.
+        :param cfg: Optional `RasterLoadParams`. Usually set by `open` method.
+        :param layer_name: Name for Dask layers, used in task naming.
+        """
         self._layer_name = layer_name
         self._xx = src
         self._cfg = cfg
@@ -297,6 +362,21 @@ class XrMemReaderDask:
         layer_name: str,
         idx: int,
     ) -> DaskRasterReader:
+        """
+        Prepare the Dask reader for a specific `RasterSource`.
+
+        This involves:
+        1. Creating an `xr.DataArray` from the `RasterSource` (which might be a Zarr spec).
+        2. Reprojecting this source array to the target grid defined in `ctx.gbt` (GeoboxTiles).
+           The reprojected array is chunked according to `gbt.chunk_shape`.
+
+        :param src: The `RasterSource` to open.
+        :param cfg: `RasterLoadParams` for this read operation.
+        :param ctx: The `Context` for this load, providing `GeoboxTiles`.
+        :param layer_name: Name for Dask layers.
+        :param idx: Index for this source/task.
+        :return: A configured `XrMemReaderDask` instance.
+        """
         assert idx >= 0
         base, *_ = layer_name.rsplit("-", 1)
         _tk = tokenize(src, ctx)
@@ -331,6 +411,15 @@ class XrMemReaderDriver:
         template: RasterGroupMetadata | None = None,
         fs: fsspec.AbstractFileSystem | None = None,
     ) -> None:
+        """
+        Initialize XrMemReaderDriver.
+
+        :param src: Optional `xr.Dataset` to use as a fallback or template source.
+        :param template: Optional `RasterGroupMetadata` to use as a template.
+                         If `src` is provided and `template` is None, a template
+                         is generated from `src`.
+        :param fs: Optional `fsspec.AbstractFileSystem` instance to use for Zarr access.
+        """
         if src is not None and template is None:
             template = raster_group_md(src)
         if template is None:
@@ -345,29 +434,56 @@ class XrMemReaderDriver:
         *,
         chunks: None | dict[str, int] = None,
     ) -> Context:
+        """
+        Initialize a new load operation for this driver.
+
+        :param geobox: The target `GeoBox` for the entire load.
+        :param chunks: Optional chunking information if Dask is used.
+        :return: A `Context` instance for this load.
+        """
         return Context(geobox, chunks, driver=self)
 
     def finalise_load(self, load_state: Context) -> Context:
+        """
+        Finalize the load operation (currently a no-op).
+
+        :param load_state: The `Context` for this load.
+        :return: The `load_state`.
+        """
         return load_state
 
     def capture_env(self) -> dict[str, Any]:
+        """Capture environment (returns an empty dict as this driver is memory/spec based)."""
         return {}
 
     @contextmanager
     def restore_env(
         self, env: dict[str, Any], load_state: Context
     ) -> Iterator[Context]:
+        """Context manager to restore environment (currently a no-op)."""
         yield load_state.with_env(env)
 
     def open(self, src: RasterSource, ctx: Context) -> XrMemReader:
+        """
+        Open a `RasterSource` for reading.
+
+        Converts the `RasterSource` (which may contain Zarr spec or Xarray object)
+        into an `xr.DataArray` using `from_raster_source`, then wraps it with `XrMemReader`.
+
+        :param src: The `RasterSource` to open.
+        :param ctx: The current `Context`.
+        :return: An `XrMemReader` instance.
+        """
         return XrMemReader(from_raster_source(src, ctx))
 
     @property
     def md_parser(self) -> MDParser:
+        """The metadata parser (`XrMDPlugin`) for this driver."""
         return XrMDPlugin(self.template, fallback=self.src)
 
     @property
     def dask_reader(self) -> DaskRasterReader | None:
+        """The Dask-specific reader interface (`XrMemReaderDask`)."""
         return XrMemReaderDask()
 
 
@@ -400,6 +516,19 @@ def raster_group_md(
     extra_coords: Sequence[FixedCoord] = (),
     extra_dims: dict[str, int] | None = None,
 ) -> RasterGroupMetadata:
+    """
+    Generate `RasterGroupMetadata` from an `xr.Dataset`.
+
+    Extracts band information from data variables, spatial dimensions,
+    and other coordinate information to populate a `RasterGroupMetadata` object.
+
+    :param src: The source `xr.Dataset`.
+    :param base: Optional base `RasterGroupMetadata` to extend.
+    :param aliases: Optional dictionary of band aliases.
+    :param extra_coords: Optional sequence of `FixedCoord` to add.
+    :param extra_dims: Optional dictionary of extra dimension names and their sizes.
+    :return: A `RasterGroupMetadata` object.
+    """
     oo: ODCExtensionDs = src.odc
     sdims = oo.spatial_dims or ("y", "x")
 
@@ -507,12 +636,22 @@ def mk_zarr_chunk_refs(
 
 
 def _with_roi(xx: np.ndarray) -> tuple[tuple[slice, slice], np.ndarray]:
+    """Wrap a numpy array with a full ROI (Region of Interest) slice."""
     return (slice(None), slice(None)), xx
 
 
 def _extra_dims_selector(
     selection: ReaderSubsetSelection, cfg: RasterLoadParams
 ) -> dict[str, Any]:
+    """
+    Create a dictionary for `xr.DataArray.isel` for extra dimensions based on selection.
+
+    Assumes selection is for a single extra dimension as defined in `cfg.extra_dims`.
+
+    :param selection: Selection object (e.g., slice, int).
+    :param cfg: `RasterLoadParams` containing the extra dimension name.
+    :return: A dictionary suitable for `isel` (e.g., `{"band_dim_name": selection}`).
+    """
     if selection is None:
         return {}
 
@@ -525,6 +664,14 @@ def _extra_dims_selector(
 def _select_extra_dims(
     src: xr.DataArray, selection: ReaderSubsetSelection, cfg: RasterLoadParams
 ) -> xr.DataArray:
+    """
+    Select data from an `xr.DataArray` along its extra dimensions.
+
+    :param src: The source `xr.DataArray`.
+    :param selection: The selection to apply (e.g., slice, int).
+    :param cfg: `RasterLoadParams` defining the extra dimensions.
+    :return: A new `xr.DataArray` with the selection applied.
+    """
     if selection is None:
         return src
 
@@ -532,6 +679,18 @@ def _select_extra_dims(
 
 
 def extract_zarr_spec(src: SomeDoc) -> ZarrSpecDict | None:
+    """
+    Extract Zarr metadata specification from various dictionary formats.
+
+    Handles:
+    - Already a Zarr spec (contains ".zgroup").
+    - fsspec reference file system spec (contains "zarr:metadata").
+    - Zarr consolidated metadata format (contains "zarr_consolidated_format").
+    - Zarr .zmetadata content (contains ".zmetadata" key with JSON string).
+
+    :param src: A dictionary potentially containing Zarr metadata.
+    :return: A dictionary representing the Zarr spec, or None if not found.
+    """
     if ".zgroup" in src:
         return dict(src)
 
@@ -558,6 +717,22 @@ def _from_zarr_spec(
     fsspec_opts: dict[str, Any] | None = None,
     drop_variables: Sequence[str] = (),
 ) -> xr.Dataset:
+    """
+    Open a Zarr dataset from a Zarr specification document.
+
+    Handles resolving the chunk store (local or remote via fsspec) and
+    optionally regenerating coordinates from a GeoBox.
+
+    :param spec_doc: The Zarr specification dictionary.
+    :param regen_coords: If True and a GeoBox is found, regenerate spatial coordinates.
+    :param chunk_store: Optional fsspec-compatible chunk store.
+    :param chunks: Optional chunking override for Dask.
+    :param target: Optional target path/URL if `spec_doc` refers to remote data
+                   and `chunk_store` needs to be derived.
+    :param fsspec_opts: Options for `fsspec.url_to_fs` if used.
+    :param drop_variables: Sequence of variable names to drop.
+    :return: An `xr.Dataset` opened from the Zarr specification.
+    """
     fsspec_opts = fsspec_opts or {}
     if target is not None:
         if chunk_store is None:
@@ -594,6 +769,17 @@ def _resolve_src_dataset(
     fallback: xr.Dataset | None = None,
     **kw,
 ) -> xr.Dataset | None:
+    """
+    Resolve input metadata `md` to an `xr.Dataset`.
+
+    Handles cases where `md` is a Zarr spec dictionary or already an `xr.Dataset`.
+
+    :param md: Input metadata (Zarr spec dict, xr.Dataset, etc.).
+    :param regen_coords: Passed to `_from_zarr_spec` if opening from Zarr spec.
+    :param fallback: Fallback `xr.Dataset` if `md` cannot be resolved.
+    :param kw: Additional keyword arguments for `_from_zarr_spec`.
+    :return: An `xr.Dataset` or None if resolution fails and no fallback.
+    """
     if isinstance(md, dict) and (spec_doc := extract_zarr_spec(md)) is not None:
         return _from_zarr_spec(spec_doc, regen_coords=regen_coords, **kw)
 

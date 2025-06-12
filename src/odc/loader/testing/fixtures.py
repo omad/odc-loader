@@ -1,5 +1,10 @@
 """
-Test fixture construction utilities.
+odc.loader.testing.fixtures
+===========================
+
+This module provides pytest fixtures and utility classes for testing components
+of `odc-loader`. It includes tools for creating temporary files, fake reader drivers,
+and mock metadata, simplifying the setup of test environments.
 """
 
 from __future__ import annotations
@@ -98,6 +103,16 @@ class FakeMDPlugin:
         driver_data,
         add_subdataset: bool = False,
     ) -> None:
+        """
+        Initialize FakeMDPlugin.
+
+        :param group_md: The `RasterGroupMetadata` to return from `extract`.
+        :param driver_data: The data to return from `driver_data`. Can be a dictionary
+                            mapping band names or keys to specific data, or a single
+                            value to return for all bands.
+        :param add_subdataset: If True and `driver_data` is a dict, adds a "subdataset"
+                               key to the returned dict from `driver_data`.
+        """
         self._group_md = group_md
         self._driver_data = driver_data
         self._add_subdataset = add_subdataset
@@ -141,6 +156,14 @@ class FakeReader:
             env: dict[str, Any],
             is_dask: bool,
         ) -> None:
+            """
+            Initialize FakeReader.LoadState.
+
+            :param geobox: The target `GeoBox`.
+            :param meta: `RasterGroupMetadata` for the dataset.
+            :param env: Environment dictionary.
+            :param is_dask: Whether Dask is being used.
+            """
             self.geobox = geobox
             self.meta = meta
             self.env = env
@@ -148,13 +171,21 @@ class FakeReader:
             self.finalised = False
 
         def with_env(self, env: dict[str, Any]) -> "FakeReader.LoadState":
+            """Create a new LoadState with an updated environment."""
             return FakeReader.LoadState(self.geobox, self.meta, env, self.is_dask)
 
     def __init__(self, src: RasterSource, load_state: "FakeReader.LoadState") -> None:
+        """
+        Initialize FakeReader.
+
+        :param src: The `RasterSource` this reader will handle.
+        :param load_state: The shared `LoadState` for this load operation.
+        """
         self._src = src
         self._load_state = load_state
 
     def _extra_dims(self) -> Dict[str, int]:
+        """Get a combined dictionary of extra dimensions for the current group."""
         return self._load_state.meta.extra_dims_full()
 
     def read(
@@ -218,6 +249,12 @@ class FakeReaderDriver:
         *,
         parser: MDParser | None = None,
     ) -> None:
+        """
+        Initialize FakeReaderDriver.
+
+        :param group_md: The `RasterGroupMetadata` to use for this driver.
+        :param parser: Optional `MDParser`. If None, a `FakeMDPlugin` is created.
+        """
         self._group_md = group_md
         self._parser = parser or FakeMDPlugin(group_md, None)
 
@@ -227,29 +264,53 @@ class FakeReaderDriver:
         *,
         chunks: None | Dict[str, int] = None,
     ) -> FakeReader.LoadState:
+        """
+        Initialize a new load operation.
+
+        :param geobox: The target `GeoBox` for the entire load.
+        :param chunks: Optional chunking information if Dask is used.
+        :return: A `FakeReader.LoadState` instance for this load.
+        """
         return FakeReader.LoadState(geobox, self._group_md, {}, chunks is not None)
 
     def finalise_load(self, load_state: FakeReader.LoadState) -> Any:
+        """
+        Finalize the load operation. Marks LoadState as finalised.
+
+        :param load_state: The `FakeReader.LoadState` for this load.
+        :return: The `load_state`.
+        """
         assert load_state.finalised is False
         load_state.finalised = True
         return load_state
 
     def capture_env(self) -> Dict[str, Any]:
+        """Capture environment (returns an empty dict for this fake driver)."""
         return {}
 
     @contextmanager
     def restore_env(
         self, env: Dict[str, Any], load_state: FakeReader.LoadState
     ) -> Iterator[FakeReader.LoadState]:
+        """Context manager to restore environment (yields an updated LoadState)."""
         yield load_state.with_env(env)
 
     def open(self, src: RasterSource, ctx: FakeReader.LoadState) -> FakeReader:
+        """
+        Open a `RasterSource` for reading.
+
+        :param src: The `RasterSource` to open.
+        :param ctx: The current `FakeReader.LoadState`.
+        :return: A `FakeReader` instance.
+        """
         return FakeReader(src, ctx)
 
     @property
     def md_parser(self) -> MDParser | None:
+        """The metadata parser (`FakeMDPlugin`) for this driver."""
         return self._parser
 
     @property
     def dask_reader(self) -> DaskRasterReader | None:
+        """The Dask-specific reader interface (None for this fake driver)."""
         return None
