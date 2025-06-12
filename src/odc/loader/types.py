@@ -1,4 +1,11 @@
-"""Metadata and data loading model classes."""
+"""
+odc.loader.types
+================
+
+This module defines common types used throughout the odc-loader library,
+including data structures for representing load requests, data sources,
+and band information.
+"""
 
 from __future__ import annotations
 
@@ -521,6 +528,7 @@ class ReaderDriver(Protocol):
 
 
 ReaderDriverSpec = Union[str, ReaderDriver]
+"""Specification for a reader driver, can be a name or an instance."""
 
 
 def is_reader_driver(x: Any) -> bool:
@@ -532,6 +540,7 @@ def is_reader_driver(x: Any) -> bool:
 
 
 BAND_DEFAULTS = RasterBandMetadata("float32", None, "1")
+"""Default raster band metadata: float32, no nodata, unit '1'."""
 
 
 def with_default(v: Optional[T], default_value: T, *other_defaults) -> T:
@@ -549,7 +558,13 @@ def with_default(v: Optional[T], default_value: T, *other_defaults) -> T:
     return v
 
 
-def norm_nodata(nodata) -> Union[float, None]:
+def norm_nodata(nodata: Any) -> float | None:
+    """
+    Normalize nodata value to float or None.
+
+    :param nodata: Input nodata value.
+    :return: Float representation of nodata, or None.
+    """
     if nodata is None:
         return None
     if isinstance(nodata, (int, float)):
@@ -558,9 +573,20 @@ def norm_nodata(nodata) -> Union[float, None]:
 
 
 def norm_band_metadata(
-    v: Union[RasterBandMetadata, Mapping[str, Any]],
+    v: RasterBandMetadata | Mapping[str, Any],
     fallback: RasterBandMetadata = BAND_DEFAULTS,
 ) -> RasterBandMetadata:
+    """
+    Normalize band metadata from various sources.
+
+    Ensures that the input, whether a RasterBandMetadata object or a mapping,
+    is converted to a valid RasterBandMetadata object, applying defaults.
+    It also handles variations in key names (e.g., "unit" vs "units").
+
+    :param v: Input metadata, can be RasterBandMetadata or a mapping.
+    :param fallback: Default RasterBandMetadata to use for missing fields.
+    :return: A valid RasterBandMetadata object.
+    """
     if isinstance(v, RasterBandMetadata):
         return v
     # in STAC it's "unit" not "units", so check both

@@ -3,7 +3,19 @@
 # Copyright (c) 2015-2020 ODC Contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-rasterio helpers
+odc.loader._rio
+===============
+
+This module provides the Rasterio-based reader driver (`RioDriver`) for `odc-loader`.
+It handles opening raster files using Rasterio, managing GDAL environment settings,
+and performing read operations, including reprojection and nodata handling.
+
+Key components:
+- `RioDriver`: Implements the `ReaderDriver` protocol using Rasterio.
+- `RioReader`: The reader class instantiated by `RioDriver` for each source.
+- `rio_read`: Core function performing the actual read operation with Rasterio.
+- Environment management functions (`capture_rio_env`, `rio_env`, `configure_rio`,
+  `configure_s3_access`) for setting up GDAL options and AWS credentials.
 """
 from __future__ import annotations
 
@@ -88,19 +100,33 @@ class RioReader:
 
     class LoaderState:
         """
-        Shared across all Readers for single ``.load``.
+        State shared across all RioReader instances for a single ``.load()`` operation.
 
-        TODO: open file handle cache goes here
+        This can hold information like the target geobox and whether Dask is being used.
+        Future extensions could include caching open file handles.
         """
 
         def __init__(self, geobox: GeoBox, is_dask: bool) -> None:
+            """
+            Initialize LoaderState.
+
+            :param geobox: The target GeoBox for the load operation.
+            :param is_dask: True if Dask is being used for this load.
+            """
             self.geobox = geobox
             self.is_dask = is_dask
 
         def finalise(self) -> None:
+            """Called when the load operation is complete."""
             pass
 
     def __init__(self, src: RasterSource, ctx: "RioReader.LoaderState") -> None:
+        """
+        Initialize RioReader.
+
+        :param src: The `RasterSource` this reader will handle.
+        :param ctx: The shared `LoaderState` for this load operation.
+        """
         self._src = src
         self._ctx = ctx
 
@@ -112,12 +138,24 @@ class RioReader:
         dst: Optional[np.ndarray] = None,
         selection: Optional[ReaderSubsetSelection] = None,
     ) -> tuple[tuple[slice, slice], np.ndarray]:
+        """
+        Read data from the `RasterSource` into the destination `GeoBox`.
+
+        :param cfg: `RasterLoadParams` defining how to read the data.
+        :param dst_geobox: The destination `GeoBox`.
+        :param dst: Optional destination numpy array to read into.
+        :param selection: Optional selection for subsetting.
+        :return: Tuple of (destination_roi_slices, numpy_array_of_pixels).
+        """
         return rio_read(self._src, cfg, dst_geobox, dst=dst, selection=selection)
 
 
 class RioDriver:
     """
-    Protocol for readers.
+    Rasterio-based ReaderDriver implementation.
+
+    This driver uses Rasterio to open and read various raster formats.
+    It manages GDAL environment settings and AWS session configurations.
     """
 
     def new_load(
@@ -126,18 +164,43 @@ class RioDriver:
         *,
         chunks: None | Dict[str, int] = None,
     ) -> RioReader.LoaderState:
+        """
+        Initialize a new load operation.
+
+        :param geobox: The target `GeoBox` for the entire load.
+        :param chunks: Optional chunking information if Dask is used.
+        :return: A `RioReader.LoaderState` instance for this load.
+        """
         return RioReader.LoaderState(geobox, is_dask=chunks is not None)
 
     def finalise_load(self, load_state: RioReader.LoaderState) -> Any:
+        """
+        Finalize the load operation.
+
+        :param load_state: The `RioReader.LoaderState` for this load.
+        :return: Result of finalization (currently None).
+        """
         return load_state.finalise()
 
     def capture_env(self) -> Dict[str, Any]:
+        """
+        Capture the current GDAL and AWS environment settings.
+
+        :return: A dictionary of environment settings.
+        """
         return capture_rio_env()
 
     @contextmanager
     def restore_env(
         self, env: Dict[str, Any], load_state: RioReader.LoaderState
     ) -> Iterator[RioReader.LoaderState]:
+        """
+        Context manager to temporarily restore GDAL/AWS environment for a read operation.
+
+        :param env: Environment dictionary captured by `capture_env`.
+        :param load_state: The current `RioReader.LoaderState`.
+        :yields: The `load_state`.
+        """
         with rio_env(**env):
             yield load_state
 
@@ -146,18 +209,28 @@ class RioDriver:
         src: RasterSource,
         ctx: RioReader.LoaderState,
     ) -> RioReader:
+        """
+        Open a `RasterSource` for reading.
+
+        :param src: The `RasterSource` to open.
+        :param ctx: The current `RioReader.LoaderState`.
+        :return: A `RioReader` instance.
+        """
         return RioReader(src, ctx)
 
     @property
     def md_parser(self) -> MDParser | None:
+        """The metadata parser associated with this driver (None for RioDriver)."""
         return None
 
     @property
     def dask_reader(self) -> DaskRasterReader | None:
+        """The Dask-specific reader interface (None for basic RioDriver)."""
         return None
 
 
 class _GlobalRioConfig:
+    """Internal class to hold global Rasterio/GDAL configuration."""
     def __init__(self) -> None:
         self._configured = False
         self._aws: Optional[Dict[str, Any]] = None
@@ -169,15 +242,28 @@ class _GlobalRioConfig:
         aws: Optional[Dict[str, Any]],
         gdal_opts: Dict[str, Any],
     ) -> None:
+        """
+        Set the global AWS and GDAL options.
+
+        :param aws: AWS session parameters.
+        :param gdal_opts: GDAL configuration options.
+        """
         self._aws = {**aws} if aws is not None else None
         self._gdal_opts = {**gdal_opts}
         self._configured = True
 
     @property
     def configured(self) -> bool:
+        """Check if global configuration has been set."""
         return self._configured
 
     def env(self) -> rasterio.env.Env:
+        """
+        Create a Rasterio Env based on the global configuration.
+
+        Uses thread-local session management.
+        :return: A `rasterio.env.Env` instance.
+        """
         if self._configured is False:
             return rasterio.env.Env(_local.session())
 
@@ -205,12 +291,22 @@ class ThreadSession(threading.local):
         return self._session is not None
 
     def reset(self) -> None:
+        """Reset the thread-local session and GDAL environment."""
         self._session = None
         self._aws = None
         if rasterio.env.hasenv():
             rasterio.env.delenv()
 
     def session(self, session: Union[Dict[str, Any], Session] = None) -> Session:
+        """
+        Get or initialize the Rasterio session for the current thread.
+
+        If a session is provided, it may be used or cached.
+        Manages the global GDAL environment activation (`rasterio.env.defenv()`).
+
+        :param session: Optional session info (dict for AWS, or `rasterio.Session` instance).
+        :return: The active `rasterio.Session`.
+        """
         if self._session is None:
             # first call in this thread
             # 1. Start GDAL environment
@@ -243,7 +339,14 @@ class ThreadSession(threading.local):
 _local = ThreadSession()
 
 
-def _sanitize(opts, keys):
+def _sanitize(opts: Dict[str, Any], keys: Tuple[str, ...]) -> Dict[str, Any]:
+    """
+    Sanitize a dictionary by replacing values of specified keys.
+
+    :param opts: Dictionary to sanitize.
+    :param keys: Keys whose values should be replaced with "xx..xx".
+    :return: Sanitized dictionary.
+    """
     return {k: (v if k not in keys else "xx..xx") for k, v in opts.items()}
 
 
@@ -283,6 +386,13 @@ def _set_default_rio_config(
     cloud_defaults: bool = False,
     **kwargs,
 ) -> None:
+    """
+    Internal helper to set the global Rasterio configuration (_CFG).
+
+    :param aws: AWS session parameters.
+    :param cloud_defaults: Whether to apply GDAL cloud default settings.
+    :param kwargs: Other GDAL options.
+    """
     opts = {**GDAL_CLOUD_DEFAULTS, **kwargs} if cloud_defaults else {**kwargs}
     _CFG.set(aws=aws, gdal_opts=opts)
 
@@ -318,6 +428,7 @@ def configure_rio(
 
 
 def _dump_rio_config() -> None:
+    """Dump current Rasterio/GDAL environment configuration to stdout."""
     cfg = get_rio_env()
     if not cfg:
         return
@@ -383,6 +494,14 @@ def configure_s3_access(
 def _reproject_info_from_rio(
     rdr: rasterio.DatasetReader, dst_geobox: GeoBox, ttol: float
 ) -> ReprojectInfo:
+    """
+    Compute reprojection information from a Rasterio reader to a destination GeoBox.
+
+    :param rdr: Open `rasterio.DatasetReader`.
+    :param dst_geobox: Target `GeoBox`.
+    :param ttol: Tolerance for considering transforms as identical.
+    :return: `ReprojectInfo` detailing the operation.
+    """
     return compute_reproject_roi(rio_geobox(rdr), dst_geobox, ttol=ttol)
 
 
@@ -393,6 +512,18 @@ def _do_read(
     rr: ReprojectInfo,
     dst: Optional[np.ndarray] = None,
 ) -> tuple[tuple[slice, slice], np.ndarray]:
+    """
+    Perform the actual Rasterio read/reproject operation for a single band or band selection.
+
+    Handles reading data, remapping nodata values if necessary, and reprojecting.
+
+    :param src: `rasterio.Band` object (can represent multiple bands).
+    :param cfg: `RasterLoadParams` for the operation.
+    :param dst_geobox: Target `GeoBox`.
+    :param rr: `ReprojectInfo` detailing the reprojection.
+    :param dst: Optional destination numpy array.
+    :return: Tuple of (destination_roi_slices, numpy_array_of_pixels).
+    """
     resampling = resampling_s2rio(cfg.resampling)
     rdr = src.ds
     roi_dst: tuple[slice, slice] = rr.roi_dst  # type: ignore
@@ -553,6 +684,19 @@ def _rio_read(
     dst: Optional[np.ndarray] = None,
     selection: Optional[ReaderSubsetSelection] = None,
 ) -> tuple[tuple[slice, slice], np.ndarray]:
+    """
+    Helper for `rio_read` that handles opening the dataset and overview selection.
+
+    Manages opening the rasterio dataset, selecting an overview if appropriate,
+    and then calls `_do_read` to perform the read operation.
+
+    :param src: `RasterSource` to read from.
+    :param cfg: `RasterLoadParams` for the read.
+    :param dst_geobox: Target `GeoBox`.
+    :param dst: Optional destination numpy array.
+    :param selection: Optional band/subset selection.
+    :return: Tuple of (destination_roi_slices, numpy_array_of_pixels).
+    """
     # if resampling is `nearest` then ignore sub-pixel translation when deciding
     # whether we can just paste source into destination
     ttol = 0.9 if cfg.nearest else 0.05
@@ -584,6 +728,15 @@ def _rio_read(
 
 
 def capture_rio_env() -> Dict[str, Any]:
+    """
+    Capture GDAL environment settings relevant for Rasterio operations.
+
+    This includes global GDAL options set via `configure_rio` and
+    any options currently active in the thread-local Rasterio environment.
+    Excludes GDAL_DATA to avoid issues if workers are on different machines.
+
+    :return: A dictionary of GDAL environment options.
+    """
     # pylint: disable=protected-access
     if _CFG._configured:
         env = {**_CFG._gdal_opts, "_aws": _CFG._aws}
